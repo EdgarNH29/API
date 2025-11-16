@@ -7,23 +7,24 @@ from typing import List
 
 from database import SessionLocal, engine
 from models import Base, Usuario as UsuarioDB, Categoria as CategoriaDB, Modelo3D, Calificacion as CalificacionDB
-from tablas import UsuarioCreate, Usuario, Categoria, Modelo, CalificacionCreate, Calificacion
+from tablas import UsuarioCreate, Usuario, Categoria, Modelo, CalificacionCreate, Calificacion, Login
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
 # Crear las tablas en la base de datos
 Base.metadata.create_all(bind=engine)
 
 # Inicializar la aplicación FastAPI
 app = FastAPI(title="API de Modelos 3D", version="2.0")
 
-
+# Configurar CORS
 app.add_middleware(
-  CORSMiddleware,
-  allow_origins=["*"],  # para pruebas; en producción restringe al dominio de tu frontend
-  allow_credentials=True,
-  allow_methods=["*"],
-  allow_headers=["*"],
+    CORSMiddleware,
+    allow_origins=["*"],  # para pruebas; en producción restringir al dominio del frontend
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-
 
 # Carpeta para subir archivos
 UPLOAD_DIR = "uploads"
@@ -76,10 +77,27 @@ def modelos_por_categoria(id: int, db: Session = Depends(get_db)):
 async def subir_modelo(
     file: UploadFile = File(...),
     descripcion: str = "",
-    id_usuario: int = 1,
-    id_categoria: int = 10,
+    id_usuario: int = None,
+    id_categoria: int = None,
     db: Session = Depends(get_db)
 ):
+    if id_usuario is None:
+        raise HTTPException(status_code=400, detail="Falta el parámetro id_usuario")
+
+    usuario = db.query(UsuarioDB).filter(UsuarioDB.id == id_usuario).first()
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if id_categoria is None:
+        id_categoria = 1
+
+    categoria = db.query(CategoriaDB).filter(CategoriaDB.id == id_categoria).first()
+    if not categoria:
+        raise HTTPException(status_code=404, detail="Categoría no encontrada")
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Archivo inválido o vacío")
+
     ruta = os.path.join(UPLOAD_DIR, file.filename)
     with open(ruta, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -93,7 +111,13 @@ async def subir_modelo(
     db.add(nuevo)
     db.commit()
     db.refresh(nuevo)
-    return {"mensaje": "Modelo subido correctamente", "id": nuevo.id}
+
+    return {
+        "mensaje": "Modelo subido correctamente",
+        "id": nuevo.id,
+        "archivo": nuevo.nombre_archivo,
+        "usuario": usuario.nombre
+    }
 
 @app.get("/modelos/", response_model=List[Modelo])
 def listar_modelos(db: Session = Depends(get_db)):
@@ -155,12 +179,10 @@ def obtener_calificaciones(id_modelo: int, db: Session = Depends(get_db)):
 # === RANKING DE MODELOS ===
 @app.get("/ranking/")
 def obtener_ranking(db: Session = Depends(get_db)):
-
     modelos = db.query(Modelo3D).all()
     ranking = []
 
     for modelo in modelos:
-        
         calificaciones = db.query(CalificacionDB).filter(CalificacionDB.id_modelo == modelo.id).all()
         if calificaciones:
             promedio = sum(c.puntuacion for c in calificaciones) / len(calificaciones)
@@ -181,3 +203,32 @@ def obtener_ranking(db: Session = Depends(get_db)):
 
     ranking.sort(key=lambda x: x["promedio"], reverse=True)
     return ranking
+
+# === LOGIN / REGISTRO AUTOMÁTICO ===
+@app.post("/login")
+def login(usuario: Login, db: Session = Depends(get_db)):
+    existente = db.query(UsuarioDB).filter_by(correo=usuario.correo).first()
+
+    if existente:
+        return {
+            "mensaje": "Inicio de sesión exitoso",
+            "id": existente.id,
+            "nombre": existente.nombre,
+            "correo": existente.correo
+        }
+
+    # Asignar siguiente ID incremental
+    last_user = db.query(UsuarioDB).order_by(UsuarioDB.id.desc()).first()
+    next_id = 1 if not last_user else last_user.id + 1
+
+    nuevo = UsuarioDB(id=next_id, nombre=usuario.nombre, correo=usuario.correo)
+    db.add(nuevo)
+    db.commit()
+    db.refresh(nuevo)
+
+    return {
+        "mensaje": "Usuario creado e inicio de sesión",
+        "id": nuevo.id,
+        "nombre": nuevo.nombre,
+        "correo": nuevo.correo
+    }

@@ -48,3 +48,7 @@ class Calificacion(CalificacionBase):
     id_modelo: int
     class Config:
         orm_mode = True
+
+class Login(BaseModel):
+    nombre: str
+    correo: str

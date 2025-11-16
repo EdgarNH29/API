@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -9,7 +9,6 @@ from database import SessionLocal, engine
 from models import Base, Usuario as UsuarioDB, Categoria as CategoriaDB, Modelo3D, Calificacion as CalificacionDB
 from tablas import UsuarioCreate, Usuario, Categoria, Modelo, CalificacionCreate, Calificacion, Login
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 # Crear las tablas en la base de datos
 Base.metadata.create_all(bind=engine)
@@ -20,7 +19,7 @@ app = FastAPI(title="API de Modelos 3D", version="2.0")
 # Configurar CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # para pruebas; en producción restringir al dominio del frontend
+    allow_origins=["*"],  # En producción, restringir al dominio de tu frontend
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -76,32 +75,31 @@ def modelos_por_categoria(id: int, db: Session = Depends(get_db)):
 @app.post("/subir_modelo/")
 async def subir_modelo(
     file: UploadFile = File(...),
-    descripcion: str = "",
-    id_usuario: int = None,
-    id_categoria: int = None,
+    descripcion: str = Form(...),
+    id_usuario: int = Form(...),
+    id_categoria: int = Form(...),
     db: Session = Depends(get_db)
 ):
-    if id_usuario is None:
-        raise HTTPException(status_code=400, detail="Falta el parámetro id_usuario")
-
+    # Validar que el usuario exista
     usuario = db.query(UsuarioDB).filter(UsuarioDB.id == id_usuario).first()
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if id_categoria is None:
-        id_categoria = 1
-
+    # Validar que la categoría exista
     categoria = db.query(CategoriaDB).filter(CategoriaDB.id == id_categoria).first()
     if not categoria:
         raise HTTPException(status_code=404, detail="Categoría no encontrada")
 
+    # Validar archivo
     if not file.filename:
         raise HTTPException(status_code=400, detail="Archivo inválido o vacío")
 
+    # Guardar archivo en disco
     ruta = os.path.join(UPLOAD_DIR, file.filename)
     with open(ruta, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
+    # Crear registro en la BD
     nuevo = Modelo3D(
         nombre_archivo=file.filename,
         descripcion=descripcion,
@@ -116,7 +114,8 @@ async def subir_modelo(
         "mensaje": "Modelo subido correctamente",
         "id": nuevo.id,
         "archivo": nuevo.nombre_archivo,
-        "usuario": usuario.nombre
+        "usuario": usuario.nombre,
+        "categoria": categoria.nombre
     }
 
 @app.get("/modelos/", response_model=List[Modelo])
@@ -204,11 +203,12 @@ def obtener_ranking(db: Session = Depends(get_db)):
     ranking.sort(key=lambda x: x["promedio"], reverse=True)
     return ranking
 
-# === LOGIN / REGISTRO AUTOMÁTICO ===
+# === LOGIN ===
 @app.post("/login")
 def login(usuario: Login, db: Session = Depends(get_db)):
     existente = db.query(UsuarioDB).filter_by(correo=usuario.correo).first()
 
+    # Si existe → iniciar sesión
     if existente:
         return {
             "mensaje": "Inicio de sesión exitoso",
@@ -217,11 +217,8 @@ def login(usuario: Login, db: Session = Depends(get_db)):
             "correo": existente.correo
         }
 
-    # Asignar siguiente ID incremental
-    last_user = db.query(UsuarioDB).order_by(UsuarioDB.id.desc()).first()
-    next_id = 1 if not last_user else last_user.id + 1
-
-    nuevo = UsuarioDB(id=next_id, nombre=usuario.nombre, correo=usuario.correo)
+    # Si no existe → registrarlo automáticamente
+    nuevo = UsuarioDB(nombre=usuario.nombre, correo=usuario.correo)
     db.add(nuevo)
     db.commit()
     db.refresh(nuevo)

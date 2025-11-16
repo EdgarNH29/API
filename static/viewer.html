@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Visor y Subida 3D - API FastAPI</title>
+  <style>
+    body { margin: 0; background-color: #111; color: white; font-family: Arial; }
+    #menu { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 8px; z-index: 20; }
+    select, input, button { margin-top: 5px; display: block; padding: 5px; width: 200px; }
+    canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; }
+  </style>
+</head>
+<body>
+  <div id="menu">
+    <h3>Subir Modelo 3D</h3>
+    <input type="file" id="fileInput" accept=".glb,.gltf">
+    <input type="text" id="descInput" placeholder="Descripción">
+    <button id="uploadBtn">Subir</button>
+
+    <h3>Seleccionar Modelo</h3>
+    <select id="modelSelect"></select>
+    <button id="deleteBtn" style="margin-top:8px;background:#b33;color:white;">Eliminar Modelo</button>
+  </div>
+
+  <canvas id="renderCanvas"></canvas>
+
+  <!-- Babylon.js -->
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script src="https://cdn.babylonjs.com/loaders/babylon.glTF2FileLoader.js"></script>
+
+  <script>
+    (function () {
+      const API_BASE = "http://127.0.0.1:8000";
+      const select = document.getElementById("modelSelect");
+      const fileInput = document.getElementById("fileInput");
+      const descInput = document.getElementById("descInput");
+      const uploadBtn = document.getElementById("uploadBtn");
+      const deleteBtn = document.getElementById("deleteBtn");
+      const canvas = document.getElementById("renderCanvas");
+
+      // --- Babylon.js ---
+      const engine = new BABYLON.Engine(canvas, true);
+      const scene = new BABYLON.Scene(engine);
+
+      const camera = new BABYLON.ArcRotateCamera("camera", Math.PI/2, Math.PI/2, 5, BABYLON.Vector3.Zero(), scene);
+      camera.attachControl(canvas, true);
+
+      const light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0,1,0), scene);
+
+      // Array con los meshes cargados del modelo actual (para poder borrarlos)
+      let currentMeshes = [];
+
+      function renderScene() {
+        engine.runRenderLoop(() => { 
+          if (scene) scene.render(); 
+        });
+      }
+
+      window.addEventListener("resize", () => engine.resize());
+
+      // --- Listar modelos desde la API ---
+      async function loadModelList() {
+        try {
+          select.innerHTML = "";
+          const res = await fetch(`${API_BASE}/models/`);
+          if (!res.ok) throw new Error("Error al cargar la lista de modelos");
+          const models = await res.json();
+          models.forEach(m => {
+            const opt = document.createElement("option");
+            opt.value = m.filename;
+            opt.textContent = m.filename;
+            select.appendChild(opt);
+          });
+          if (models.length > 0) {
+            select.value = models[0].filename;
+            loadModel(models[0].filename);
+          } else {
+            // si no hay modelos, limpiar escena
+            clearCurrentMeshes();
+          }
+          console.log("Lista de modelos cargada:", models);
+        } catch (err) {
+          console.error(err);
+          alert("No se pudo cargar la lista de modelos.");
+        }
+      }
+
+      // Elimina los meshes actuales de la escena y limpia currentMeshes
+      function clearCurrentMeshes() {
+        if (currentMeshes && currentMeshes.length > 0) {
+          currentMeshes.forEach(m => {
+            try { m.dispose(true, true); } catch(e) { /* ignore */ }
+          });
+        }
+        currentMeshes = [];
+      }
+
+      // --- Cargar modelo seleccionado ---
+      async function loadModel(filename) {
+        if (!filename) return;
+        const url = `${API_BASE}/files/${filename}`;
+        try {
+          // limpiar modelo anterior
+          clearCurrentMeshes();
+
+          // Contamos cuantos meshes había antes para poder identificar los nuevos
+          const beforeCount = scene.meshes.length;
+
+          // SceneLoader.Append(rootUrl, sceneFilename, scene, onSuccess, onProgress, onError)
+          BABYLON.SceneLoader.Append("", url, scene,
+            function (loadedScene) {
+              // Los meshes nuevos son la porción añadida al array scene.meshes
+              const afterMeshes = scene.meshes;
+              const newMeshes = afterMeshes.slice(beforeCount);
+              currentMeshes = newMeshes;
+              // Opcional: centrar la cámara en el modelo
+              try {
+                const bbox = BABYLON.Mesh.MergeMeshes(currentMeshes.filter(m=>m.isVisible), true, true, undefined, false, true);
+                if (bbox) {
+                  bbox.computeWorldMatrix(true);
+                  const extents = bbox.getBoundingInfo().boundingBox.extendSize;
+                  const radius = Math.max(extents.x, extents.y, extents.z);
+                  camera.target = bbox.getBoundingInfo().boundingBox.centerWorld;
+                  camera.radius = Math.max(2, radius * 3);
+                  // si merge creó un mesh temporal, lo descartamos sin destruir los originales
+                  bbox.dispose();
+                }
+              } catch(e) {
+                // no crítico
+              }
+              console.log("Modelo cargado:", filename, "meshes añadidos:", newMeshes.length);
+            },
+            null,
+            function (scene, message, exception) {
+              console.error("Error al cargar el modelo:", message, exception);
+              alert("Error al cargar el modelo 3D. Revisa la consola.");
+            }
+          );
+        } catch (err) {
+          console.error("Error en loadModel:", err);
+          alert("Error al cargar el modelo.");
+        }
+      }
+
+      select.addEventListener("change", () => {
+        const filename = select.value;
+        loadModel(filename);
+      });
+
+      // --- Subir modelo a la API ---
+      uploadBtn.addEventListener("click", async () => {
+        const file = fileInput.files[0];
+        const description = descInput.value || "";
+
+        if (!file) {
+          alert("Selecciona un archivo primero");
+          return;
+        }
+
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("description", description);
+
+        try {
+          console.log("Subiendo archivo:", file.name);
+          const res = await fetch(`${API_BASE}/upload_model/`, {
+            method: "POST",
+            body: formData
+          });
+
+          const data = await res.json();
+          if (res.ok) {
+            console.log("Subida OK:", data);
+            alert("Modelo subido correctamente");
+            fileInput.value = "";
+            descInput.value = "";
+            await loadModelList();
+          } else {
+            console.error("Error al subir modelo:", data);
+            alert("Error al subir modelo: " + (data.detail || JSON.stringify(data)));
+          }
+        } catch (err) {
+          console.error("Error de conexión con la API:", err);
+          alert("Error de conexión con la API");
+        }
+      });
+
+      // --- Eliminar modelo ---
+      deleteBtn.addEventListener("click", async () => {
+        const filename = select.value;
+        if (!filename) {
+          alert("Selecciona un modelo para eliminar");
+          return;
+        }
+        if (!confirm(`¿Seguro que quieres eliminar el modelo "${filename}"?`)) return;
+
+        try {
+          const res = await fetch(`${API_BASE}/delete_model/${encodeURIComponent(filename)}`, {
+            method: "DELETE"
+          });
+          const data = await res.json();
+          if (res.ok) {
+            alert(data.message || "Modelo eliminado");
+            // limpiar escena
+            clearCurrentMeshes();
+            // recargar lista
+            await loadModelList();
+          } else {
+            console.error("Error al eliminar modelo:", data);
+            alert("Error al eliminar modelo: " + (data.detail || JSON.stringify(data)));
+          }
+        } catch (err) {
+          console.error("Error al eliminar modelo:", err);
+          alert("Error de conexión con la API");
+        }
+      });
+
+      // inicializa
+      loadModelList();
+      renderScene();
+    })();
+  </script>
+</body>
+</html>

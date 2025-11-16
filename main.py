@@ -8,12 +8,22 @@ from typing import List
 from database import SessionLocal, engine
 from models import Base, Usuario as UsuarioDB, Categoria as CategoriaDB, Modelo3D, Calificacion as CalificacionDB
 from tablas import UsuarioCreate, Usuario, Categoria, Modelo, CalificacionCreate, Calificacion
-
+from fastapi.middleware.cors import CORSMiddleware
 # Crear las tablas en la base de datos
 Base.metadata.create_all(bind=engine)
 
 # Inicializar la aplicación FastAPI
 app = FastAPI(title="API de Modelos 3D", version="2.0")
+
+
+app.add_middleware(
+  CORSMiddleware,
+  allow_origins=["*"],  # para pruebas; en producción restringe al dominio de tu frontend
+  allow_credentials=True,
+  allow_methods=["*"],
+  allow_headers=["*"],
+)
+
 
 # Carpeta para subir archivos
 UPLOAD_DIR = "uploads"
